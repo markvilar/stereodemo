@@ -4,3 +4,21 @@ requires = [
     "wheel"
 ]
 build-backend = "setuptools.build_meta"
+
+
+[tool.poetry]
+name = "stereodemo"
+version = "0.0.1"
+description = ""
+authors = ["Martin Kvisvik Larsen <martin.kvisvik.larsen@hotmail.com>"]
+readme = "README.md"
+packages = [{include = "stereodemo"}]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "~3.11"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.7.0"
+black = "^24.10.0"
+

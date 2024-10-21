@@ -1,14 +1,8 @@
 from pathlib import Path
-import shutil
 import time
-from dataclasses import dataclass
-import urllib.request
 import gc
-import tempfile
-import sys
 
 import torch
-from torchvision import transforms
 
 import cv2
 import numpy as np
@@ -43,9 +37,11 @@ urls = {
     "raft-stereo-middlebury-cuda-736x1280.scripted.pt": "https://github.com/nburrus/stereodemo/releases/download/v0.1-raft-stereo/raft-stereo-middlebury-cuda-736x1280.scripted.pt",
 }
 
+
 def clear_gpu_memory():
     gc.collect()
-    torch.cuda.empty_cache()    
+    torch.cuda.empty_cache()
+
 
 # https://github.com/princeton-vl/RAFT-Stereo
 # I exported the pytorch implementation to torch script via tracing, with minor modifications of the source code.
@@ -53,44 +49,65 @@ def clear_gpu_memory():
 # Their fastest implementation was not imported.
 class RaftStereo(StereoMethod):
     def __init__(self, config: Config):
-        super().__init__("RAFT-Stereo (3DV 2021)",
-                         "RAFT-Stereo: Multilevel Recurrent Field Transforms for Stereo Matching.",
-                         {},
-                         config)
+        super().__init__(
+            "RAFT-Stereo (3DV 2021)",
+            "RAFT-Stereo: Multilevel Recurrent Field Transforms for Stereo Matching.",
+            {},
+            config,
+        )
         self.reset_defaults()
 
         self.net = None
         self._loaded_model_path = None
 
     def reset_defaults(self):
-        self.parameters.update ({
-            "Shape": EnumParameter("Processed image size", 2, ["160x128", "320x256", "640x480", "1280x736"]),
-            # "Model": EnumParameter("Pre-trained Model", 1, ["eth3d-cuda", "eth3d-cpu", "fast-cuda", "fast-cpu", "middlebury-cuda"])
-            # The eth3d and fast cuda models required --corr_implementation alt to work once loaded via torchscript.
-            # The supposedly faster "reg" is not working with a torch/cuda segfault, not sure why.
-            "Model": EnumParameter("Pre-trained Model", 0, ["fast-cpu", "middlebury-cpu", "eth3d-cpu", "fast-cuda", "middlebury-cuda", "eth3d-cuda"])
-        })
+        self.parameters.update(
+            {
+                "Shape": EnumParameter(
+                    "Processed image size",
+                    2,
+                    ["160x128", "320x256", "640x480", "1280x736"],
+                ),
+                # "Model": EnumParameter("Pre-trained Model", 1, ["eth3d-cuda", "eth3d-cpu", "fast-cuda", "fast-cpu", "middlebury-cuda"])
+                # The eth3d and fast cuda models required --corr_implementation alt to work once loaded via torchscript.
+                # The supposedly faster "reg" is not working with a torch/cuda segfault, not sure why.
+                "Model": EnumParameter(
+                    "Pre-trained Model",
+                    0,
+                    [
+                        "fast-cpu",
+                        "middlebury-cpu",
+                        "eth3d-cpu",
+                        "fast-cuda",
+                        "middlebury-cuda",
+                        "eth3d-cuda",
+                    ],
+                ),
+            }
+        )
 
     def compute_disparity(self, input: InputPair) -> StereoOutput:
-        stereo_output = self._compute_disparity (input)
-        clear_gpu_memory ()
+        stereo_output = self._compute_disparity(input)
+        clear_gpu_memory()
         return stereo_output
 
     def _compute_disparity(self, input: InputPair) -> StereoOutput:
-        cols, rows = self.parameters["Shape"].value.split('x')
+        cols, rows = self.parameters["Shape"].value.split("x")
         cols, rows = int(cols), int(rows)
         self.target_size = (cols, rows)
 
         variant = self.parameters["Model"].value
-        
-        model_path = self.config.models_path / f'raft-stereo-{variant}-{rows}x{cols}.scripted.pt'
-        self._load_model (model_path)
+
+        model_path = (
+            self.config.models_path / f"raft-stereo-{variant}-{rows}x{cols}.scripted.pt"
+        )
+        self._load_model(model_path)
 
         left_tensor = self._preprocess_input(input.left_image)
         right_tensor = self._preprocess_input(input.right_image)
 
-        device = torch.device('cuda') if 'cuda' in variant else 'cpu'
-        net = self.net.to(device)
+        device = torch.device("cuda") if "cuda" in variant else "cpu"
+        _net = self.net.to(device)
         left_tensor = left_tensor.to(device)
         right_tensor = right_tensor.to(device)
 
@@ -101,13 +118,17 @@ class RaftStereo(StereoMethod):
 
         disparity_map = self._process_output(outputs)
         if disparity_map.shape[:2] != input.left_image.shape[:2]:
-            disparity_map = cv2.resize (disparity_map, (input.left_image.shape[1], input.left_image.shape[0]), cv2.INTER_NEAREST)
+            disparity_map = cv2.resize(
+                disparity_map,
+                (input.left_image.shape[1], input.left_image.shape[0]),
+                cv2.INTER_NEAREST,
+            )
             x_scale = input.left_image.shape[1] / float(cols)
             disparity_map *= np.float32(x_scale)
 
         return StereoOutput(disparity_map, input.left_image, elapsed_time)
 
-    def _preprocess_input (self, img: np.ndarray):
+    def _preprocess_input(self, img: np.ndarray):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img, self.target_size, cv2.INTER_AREA)
         # -> C,H,W
@@ -115,7 +136,9 @@ class RaftStereo(StereoMethod):
         return torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float()
 
     def _process_output(self, outputs):
-        disparity_map = outputs[1][0].detach().cpu().squeeze(0).squeeze(0).numpy() * -1.0
+        disparity_map = (
+            outputs[1][0].detach().cpu().squeeze(0).squeeze(0).numpy() * -1.0
+        )
         return disparity_map
 
     def _load_model(self, model_path: Path):
@@ -124,11 +147,11 @@ class RaftStereo(StereoMethod):
         # with CUDA. Maybe due to multi-threading?
         # if (self._loaded_model_path == model_path):
         #     return
-        
+
         if not model_path.exists():
-            utils.download_model (urls[model_path.name], model_path)
+            utils.download_model(urls[model_path.name], model_path)
 
         assert Path(model_path).exists()
         self._loaded_model_path = model_path
         self.net = torch.jit.load(model_path)
-        self.net.eval ()
+        self.net.eval()
